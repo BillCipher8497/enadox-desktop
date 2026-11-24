@@ -1,0 +1,11 @@
+# Development paths on the Windows host, except for the bridge inside WSL.
+pythonVenvPath: C:/Users/Arvin/OneDrive/Desktop/CovertDefensesLLC/ShadowMeet/ShadowFive/.venv-ov/Scripts/python.exe
+sidecarScript: C:/Users/Arvin/OneDrive/Desktop/CovertDefensesLLC/enadox-video-embed/src/enadox_service.py
+talkingPhotoScript: C:/Users/Arvin/OneDrive/Desktop/CovertDefensesLLC/enadox-video-embed/ext/vcav/talking-photo/service.py
+phasmBridgePath: /home/arvin/phasm-live-bridge/target/release/phasm-live-bridge
+dockerJitsiDir: C:/Users/Arvin/docker-jitsi-meet
+jitsiUrl: http://localhost:8000
+sidecarPort: 8011
+talkingPhotoPort: 8010
+bridges: 3
+ffmpegPath: null

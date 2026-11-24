@@ -168,9 +168,11 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
   service (listens on 8010).
 - [todo] [either] Expose health status and child-process logs to the renderer
   through IPC — a little status bar at the bottom.
-- [todo] [Codex] A config file (`resources/config/default.yaml`) with the paths
+- [blocked: waiting on Claude config IPC integration] [Codex] (started 2026-11-23 20:26 ET) A config file (`resources/config/default.yaml`) with the paths
   (Python venv, phasm bridge, docker-jitsi-meet checkout). User can override in
-  `%APPDATA%/ENADOX/config.yaml`.
+  `%APPDATA%/ENADOX/config.yaml`. Defaults are packaged and verified. The existing main-process menu and IPC design reference config.json.
+
+- [todo] [Claude] Merge the user YAML override over the packaged defaults in config IPC and align the Debug menu path with config.yaml.
 
 ### Phase 4 — Jitsi backend management
 
