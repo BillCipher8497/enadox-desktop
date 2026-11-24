@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self' 'unsafe-inline' 'unsafe-eval';
+                   connect-src 'self' ws: wss: http: https:;
+                   img-src 'self' data: blob:;
+                   media-src 'self' blob:;
+                   worker-src 'self' blob:;">
+    <title>ENADOX</title>
+    <style>
+        html, body, #root { height: 100%; margin: 0; }
+        body { background: #0d0710; color: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="module" src="./app.tsx"></script>
+</body>
+</html>
