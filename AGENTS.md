@@ -137,8 +137,8 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
   with `platform`, `version`, `onLog` for now.
 - [todo] [Claude] `src/renderer/index.html` + `src/renderer/app.tsx` — React root with
   one `<h1>ENADOX</h1>` and a placeholder tile grid. Just so we see something render.
-- [todo] [Codex] Icons and branding (grab from `enadox-video-embed/static/images/` if
-  anything usable there; otherwise generate a monochrome pink square 256x256).
+- [done] [Codex] (started 2026-11-23 20:25 ET) Icons and branding (grab from `enadox-video-embed/static/images/` if
+  anything usable there; otherwise generate a monochrome pink square 256x256). Created the fallback pink 256px icon and verified all seven Windows ICO sizes in the configured branding directory.
 - [todo] [Claude] `npm run dev` wired to run main + preload (tsc watch) + renderer
   (vite dev) and launch electron against vite's URL.
 
