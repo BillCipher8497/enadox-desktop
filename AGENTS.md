@@ -179,7 +179,7 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
 - [todo] [Claude] Detect docker-jitsi-meet containers. If absent/stopped, either
   start them (`docker compose up -d`) or show a clear "backend down — start it in
   WSL first" dialog. Don't try to bundle docker itself.
-- [todo] [either] Backend health panel in the Debug menu.
+- [done] [either] (started 2026-11-23 20:40 ET) Backend health panel in the Debug menu. Debug → Jitsi Backend Health displays the existing Compose check, per-container state or error, with a refresh action.
 
 ### Phase 5 — polish the ENADOX layer
 

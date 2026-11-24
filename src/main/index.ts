@@ -11,6 +11,7 @@ import * as fs from 'node:fs';
 import { loadConfig, installConfigIpc } from './config.js';
 import { initSidecar, sidecar } from './sidecar.js';
 import { initTalkingPhoto, talkingPhoto } from './talkingPhoto.js';
+import { showBackendHealth } from './backendHealth.js';
 import { installJitsiIpc } from './jitsiBackend.js';
 
 // Single-instance lock so a second launch focuses the existing window instead
@@ -102,6 +103,10 @@ function installAppMenu(): void {
         {
             label: 'Debug',
             submenu: [
+                {
+                    label: 'Jitsi Backend Health',
+                    click: () => { void showBackendHealth(); }
+                },
                 {
                     label: 'Open Logs Folder',
                     click: () => {

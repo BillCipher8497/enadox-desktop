@@ -29,7 +29,7 @@ async function dockerCompose(cmd: string): Promise<{ stdout: string; stderr: str
     });
 }
 
-async function status(): Promise<JitsiStatus> {
+export async function readBackendStatus(): Promise<JitsiStatus> {
     try {
         const { stdout } = await dockerCompose('ps --format json');
         const lines = stdout.split(/\r?\n/).filter(Boolean);
@@ -59,10 +59,10 @@ async function start(): Promise<JitsiStatus> {
     } catch (e) {
         return { running: false, containers: [], error: (e as Error).message };
     }
-    return status();
+    return readBackendStatus();
 }
 
 export function installJitsiIpc(): void {
-    ipcMain.handle('enadox:jitsi:status', () => status());
+    ipcMain.handle('enadox:jitsi:status', () => readBackendStatus());
     ipcMain.handle('enadox:jitsi:start', () => start());
 }
