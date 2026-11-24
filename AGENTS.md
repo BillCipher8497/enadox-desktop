@@ -252,6 +252,14 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
 
 (Append-only. Most recent on top.)
 
+- **2026-11-23 late — Claude extra:** Tier 1.2 cover-res drop landed on the
+  Jitsi fork side (`../enadox-video-embed/ext/vcav/jitsi-meet` on branch
+  `feat/talking-photo-cover`, commit c7fff96): person-direct cfg now
+  W:960, H:540 (was 1280×720). Should push extract/embed bridge calls ~40%
+  cheaper, which combined with today's pipeline + persistent VP9 work on the
+  sidecar should land us in the 20–25 fps band when measured. Roll back by
+  reverting that commit in the fork.
+
 - **2026-11-23 evening — Claude session end:** Big push while user was away.
   Shipped Phases 1-4 in full, big chunks of Phase 5+6:
   - Phase 1: Electron main + preload + renderer shell (commit 7382909).
