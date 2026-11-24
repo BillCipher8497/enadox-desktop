@@ -151,8 +151,8 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
 - [todo] [Claude] Vendor `lib-jitsi-meet` source with the ENADOX_VIDEO_ACTIVE gate in
   the right place (3 `enableInsertableStreams` sites + the `_onIceConnectionFailed`
   reload suppression). No more hand-patching the .min.js.
-- [todo] [either] Remove webpack.config.js middleware (p2p override, pwa neutralizer,
-  config.js scheme rewrite). Config is now a plain TS file.
+- [blocked: waiting on Claude's Jitsi renderer entry] [either] (started 2026-11-23 20:43 ET) Remove webpack.config.js middleware (p2p override, pwa neutralizer,
+  config.js scheme rewrite). Config is now a plain TS file. The desktop Vite server already runs without proxy middleware. The integration config needs the selected Jitsi entry and backend configuration contract.
 - [todo] [Claude] Rewire the renderer entry to point at a local Jitsi backend. For dev,
   that's `http://localhost:8000` (docker-jitsi-meet). Configurable.
 - [todo] [Claude] Wire ENADOX toggle, DEDOX button, TalkingPhotoVideoEffect — these
