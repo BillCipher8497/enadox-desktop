@@ -166,8 +166,8 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
   WS at startup, restart if it crashes.
 - [todo] [Claude] `src/main/talkingPhoto.ts` — same pattern for the talking-photo
   service (listens on 8010).
-- [todo] [either] Expose health status and child-process logs to the renderer
-  through IPC — a little status bar at the bottom.
+- [done] [either] (started 2026-11-23 20:37 ET) Expose health status and child-process logs to the renderer
+  through IPC — a little status bar at the bottom. Added a bottom status bar with live process states and the latest 100 log lines per service, verified in Electron with simulated IPC events.
 - [blocked: waiting on Claude config IPC integration] [Codex] (started 2026-11-23 20:26 ET) A config file (`resources/config/default.yaml`) with the paths
   (Python venv, phasm bridge, docker-jitsi-meet checkout). User can override in
   `%APPDATA%/ENADOX/config.yaml`. Defaults are packaged and verified. The existing main-process menu and IPC design reference config.json.

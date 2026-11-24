@@ -5,6 +5,7 @@
  * app mounted via the Vite config described in VENDORING_STRATEGY.md.
  */
 import React, { useEffect, useState } from 'react';
+import { ServiceStatusBar } from './ServiceStatusBar';
 import { createRoot } from 'react-dom/client';
 
 // Shape mirrors src/preload/index.ts. We don't import the preload's type
@@ -67,10 +68,7 @@ function App(): React.ReactElement {
             }}>
                 {diag ? JSON.stringify(diag, null, 2) : '…'}
             </div>
-            <div style={{ color: '#505050', fontSize: 11 }}>
-                Next: Phase 2 mounts the Jitsi + ENADOX renderer here. Phase 3 spawns the
-                Python sidecar + talking-photo. See <code>AGENTS.md</code>.
-            </div>
+            <ServiceStatusBar />
         </div>
     );
 }
