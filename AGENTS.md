@@ -124,7 +124,7 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
   ES2022 target, strict, moduleResolution bundler for renderer. Verified the strict ES2022 solution build for main, preload and the Vite renderer.
 - [done] [Codex] (started 2026-11-23 20:24 ET) `electron-builder.json` — Windows NSIS target, app id
   `com.covertdefenses.enadox`, bundle `resources/` as extraResources. Validated the NSIS configuration and resource mapping against electron-builder's installed schema.
-- [todo] [Codex] Vite config for the renderer with React + TS.
+- [done] [Codex] (started 2026-11-23 20:24 ET) Vite config for the renderer with React + TS. Built the Phase 1 React entry into dist/renderer with file-relative assets and verified the two Electron entry points survived the build.
 - [todo] [Codex] `.gitignore`, `.eslintrc.cjs`, prettier config.
 - [todo] [Codex] `README.md` with the setup commands below (the ones in this file's
   "User setup" section). Keep that section in sync.
