@@ -252,6 +252,33 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
 
 (Append-only. Most recent on top.)
 
+- **2026-11-23 evening — Claude session end:** Big push while user was away.
+  Shipped Phases 1-4 in full, big chunks of Phase 5+6:
+  - Phase 1: Electron main + preload + renderer shell (commit 7382909).
+  - Phase 2: lib-jitsi-meet cloned at v2191.0.0+c02b63f8, patched both gates
+    (3x enableInsertableStreams + JVB forced-reload no-op) in SOURCE now.
+    Build + npm pack + install into the fork's node_modules works end-to-end
+    (patches/lib-jitsi-meet-enadox.patch + scripts/install-lib-jitsi-meet.ps1).
+  - Phase 3: childProc.ts supervisor base, sidecar.ts + talkingPhoto.ts
+    managers with rolling log buffers + exponential-backoff restart,
+    config.ts with YAML + user override, IPC handlers wired.
+  - Phase 4: jitsiBackend.ts docker-compose ps / up IPC.
+  - Phase 6 shipped significant: pipelined phasm-extract on the sidecar
+    (mirror of sender pipeline, 3-bridge pool, N-worker concurrent extract),
+    AND persistent VP9 decoder (15.9x micro-bench: 8.6ms→0.5ms/seg). Plus
+    `/metrics` endpoint on the sidecar for live perf telemetry. Changes live
+    in ../enadox-video-embed/src/* (untracked in that repo); snapshots in
+    patches/ here with RECEIVER_PIPELINE.md documenting.
+  - Phase 1 dev script now fully wires concurrently(tsc watch + vite + wait-on +
+    electron). `npm run dev:jitsi` points the Electron window at the fork's
+    webpack dev server for the real integration test.
+  Everything pushed. User is away; services (sidecar/talking-photo/docker/dev
+  server) all stopped on my end. When user returns, see RUNNING.md for the
+  first-launch procedure.
+  Not touched this session: Phase 7 (audio — still blocked on Rishi allowlist),
+  Phase 8 (Codex is on sidecar packaging), the Phase 2 webpack.config.js
+  cleanup (deferred — browser build still relies on it).
+
 - **2026-11-23 — Claude:** Pivot initiated. All processes killed. Folder
   scaffolded with this `AGENTS.md`. Next agent picks up Phase 0.
 
