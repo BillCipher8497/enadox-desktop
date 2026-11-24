@@ -22,3 +22,14 @@ npm run dev
 Once service integration lands, the Electron app's main process
 spawns the Python sidecar + talking-photo for you. Docker you still start
 manually once per boot.
+
+## Windows development installer
+
+Run `npm run dist` to build the unsigned x64 installer in `build/`. This packages the current Electron shell.
+
+On the development machine, if electron-builder reports a symlink error extracting the Darwin libraries from winCodeSign, use the prepared Windows tool cache for this PowerShell session:
+
+```powershell
+$env:ELECTRON_BUILDER_CACHE = Join-Path $PWD '.cache/electron-builder'
+npm run dist
+```

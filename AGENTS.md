@@ -216,8 +216,8 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
   can defer until the dev flow is solid.
 - [todo] [Codex] Bundle a Windows-native phasm-live-bridge.exe so WSL isn't required.
   Needs cross-compiling the Rust at `/home/arvin/phasm-live-bridge`. Deferable.
-- [todo] [Codex] NSIS installer via electron-builder; sign with whatever cert Arvin
-  wants to use (or none for dev).
+- [done] [Codex] (started 2026-11-23 20:26 ET) NSIS installer via electron-builder; sign with whatever cert Arvin
+  wants to use (or none for dev). Built the unsigned x64 shell installer and verified its packaged configuration and three application entries.
 
 ## Who does what (quick rules)
 
