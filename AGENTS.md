@@ -191,8 +191,8 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
   `../enadox-video-embed/src/person_codec.py`). Sidecar code doesn't change —
   Electron just runs that file.
 - [todo] [Claude] Port the DEDOX full-screen overlay, the DedoxButton toggle.
-- [todo] [either] UX pass: no more "name circle" when ENADOX is off (cover hidden
-  by default, raw camera flows). This was the last bug we fixed before the pivot.
+- [blocked: waiting on Claude's camera and ENADOX toggle integration] [either] (started 2026-11-23 20:43 ET) UX pass: no more "name circle" when ENADOX is off (cover hidden
+  by default, raw camera flows). This was the last bug we fixed before the pivot. The current desktop renderer has no camera tile or toggle to exercise.
 
 ### Phase 6 — speed tier-1 items (from OPTIMIZATION_ROADMAP.md)
 
