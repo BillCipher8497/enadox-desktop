@@ -117,9 +117,9 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
 
 ### Phase 0 — scaffolding
 
-- [todo] [Codex] `package.json` with scripts: `dev`, `build`, `dist`, `lint`. Deps:
+- [done] [Codex] (started 2026-11-23 20:17 ET) `package.json` with scripts: `dev`, `build`, `dist`, `lint`. Deps:
   electron@^32, electron-builder, typescript, @types/node, @types/electron, eslint,
-  react, react-dom, @types/react*, vite (renderer bundler).
+  react, react-dom, @types/react*, vite (renderer bundler). Added the four npm scripts and verified installation of the locked Electron 32 and React 18 toolchain.
 - [todo] [Codex] `tsconfig.json` (project refs: `main`, `preload`, `renderer`).
   ES2022 target, strict, moduleResolution bundler for renderer.
 - [todo] [Codex] `electron-builder.json` — Windows NSIS target, app id
