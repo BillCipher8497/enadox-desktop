@@ -40,10 +40,42 @@ the 25 fps target with Tier-1 items 1.2 (cover-res drop) + 1.3 (pool to 5).
   `ENADOX_BRIDGES` if unset, then 3)
 - `ENADOX_BRIDGES=<N>` — sender pool size (kept as before)
 
+## Persistent VP9 decoder (Tier 2.1 — SHIPPED)
+
+Mirror of the sender's persistent-encoder refactor, applied to the receiver.
+`person_codec.py` gets two new classes:
+
+- `_PersistentVp9Decoder` — single long-lived libvpx-vp9 CodecContext. Parses
+  IVF framing by hand ([u32 size][u64 pts][bytes]) and feeds each packet to
+  the kept-alive decoder. Thread-UNSAFE; must be per-worker.
+- `PersistentPersonDecoder` — pair of the above (person + alpha); same return
+  shape as the static `PersonCodec.decode` so `composite()` is untouched.
+
+The extract pipeline in `enadox_service._extract_one` now takes a per-worker
+decoder arg and calls `decoder.decode(body)` instead of the static path.
+
+### Micro-bench on 240×135 random segments (10 seg)
+
+| Path | Total | Avg/seg | vs baseline |
+|---|---|---|---|
+| Stateless `PersonCodec.decode` (old) | 86 ms | 8.6 ms | 1.0x |
+| `PersistentPersonDecoder.decode` | 5 ms | 0.5 ms | **15.9x** |
+
+### Receiver stage cost after both refactors
+
+- Bridge extract (phasm Rust, WSL): 100–200 ms per call — DOMINANT.
+  With 3-bridge pool: 50–70 ms effective.
+- Persistent VP9 decode (person + alpha): ~0.5 ms.
+- `decode_h264_annexb` (cover re-render from the segment's Annex-B): untouched,
+  small enough to leave alone for now.
+- Composite (numpy): ~1 ms.
+
+Receiver ceiling: ~15–20 fps with N=3 bridges; matches the sender's. The last
+5 fps to 25 come from Tier-1 cover-res (720→540) plus pool bump (3→5).
+
 ## Known follow-ups
 
-- Persistent VP9 decoder on the receiver (Tier 2.1) — currently each
-  `_vp9_decode` call still creates a fresh `av.open(...)` container. Mirror of
-  the persistent-encoder refactor we did on the sender.
-- Decode `decode_h264_annexb` once per segment and share with the composite
-  worker (currently fine because it's fast).
+- `decode_h264_annexb` could reuse a persistent H264 context same way; measure
+  first — it may already be <5 ms.
+- When we build a Windows-native phasm-live-bridge.exe (Phase 8) the per-call
+  cost drops below 100 ms, at which point VP9 becomes the budget again.

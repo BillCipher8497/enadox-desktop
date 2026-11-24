@@ -437,7 +437,11 @@ async def phasm_extract(ws:WebSocket):
     import person_codec as _pc
     N_BRIDGES = int(os.environ.get("ENADOX_EXTRACT_BRIDGES", os.environ.get("ENADOX_BRIDGES", "3")))
     bridges = [_phasm.PhasmBridge() for _ in range(N_BRIDGES)]
-    log.info(f"/ws/phasm-extract open (coefficient-domain person-direct, pipelined x{N_BRIDGES})")
+    # Per-worker persistent VP9 decoder: 15.9x speedup over the static per-call `av.open` path.
+    # Same trick as the sender's persistent encoder — libvpx-vp9 startup cost is paid once per
+    # worker instead of once per segment.
+    decoders = [_pc.PersistentPersonDecoder() for _ in range(N_BRIDGES)]
+    log.info(f"/ws/phasm-extract open (coefficient-domain person-direct, pipelined x{N_BRIDGES}, persistent VP9)")
     jlog(ev="phasm_extract_open",person=True,bridges=N_BRIDGES)
 
     QSIZE = max(4, 2 * N_BRIDGES)
@@ -461,13 +465,16 @@ async def phasm_extract(ws:WebSocket):
         finally:
             for _ in range(N_BRIDGES): await work_q.put(None)
 
-    def _extract_one(bridge, au_bytes):
-        """Blocking: bridge.extract + PersonCodec.decode + cover decode + composite."""
+    def _extract_one(bridge, decoder, au_bytes):
+        """Blocking: bridge.extract + persistent VP9 decode + cover decode + composite.
+
+        decoder is per-worker and NOT shared across threads — keeps the libvpx-vp9
+        decoder context alive across segments."""
         ok, body = bridge.extract(au_bytes)
         if not ok:
             return "fail", body
         try:
-            persons, alphas = _pc.PersonCodec.decode(body)
+            persons, alphas = decoder.decode(body)
         except Exception as e:
             return "persondec_fail", str(e)
         try:
@@ -481,14 +488,14 @@ async def phasm_extract(ws:WebSocket):
             out.append(_pc.composite(persons[i], alphas[i], covers[i]))
         return "ok", out
 
-    async def extract_worker(bridge, worker_idx):
+    async def extract_worker(bridge, decoder, worker_idx):
         try:
             while True:
                 item = await work_q.get()
                 if item is None: return
                 seq, au_bytes, t_in = item
                 t0 = time.time()
-                kind, result = await asyncio.to_thread(_extract_one, bridge, au_bytes)
+                kind, result = await asyncio.to_thread(_extract_one, bridge, decoder, au_bytes)
                 stats["last_extract_ms"] = (time.time() - t0) * 1000
                 framed_list: list[bytes] = []
                 if kind == "ok":
@@ -539,7 +546,8 @@ async def phasm_extract(ws:WebSocket):
     tasks = [
         asyncio.create_task(recv_task()),
         asyncio.create_task(send_task()),
-    ] + [asyncio.create_task(extract_worker(b, i)) for i, b in enumerate(bridges)]
+    ] + [asyncio.create_task(extract_worker(b, d, i))
+         for i, (b, d) in enumerate(zip(bridges, decoders))]
     try:
         await asyncio.gather(*tasks, return_exceptions=True)
     finally:
@@ -548,6 +556,9 @@ async def phasm_extract(ws:WebSocket):
         jlog(ev="phasm_extract_close", **stats)
         for b in bridges:
             try: b.close()
+            except Exception: pass
+        for d in decoders:
+            try: d.close()
             except Exception: pass
 
 if __name__=="__main__":

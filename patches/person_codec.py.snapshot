@@ -1,0 +1,291 @@
+"""Person-direct codec for the ENADOX live path (validated 2026-11-22).
+
+Transmit ONLY the real person (matte + compress), not the whole frame or a neural reenactment.
+The receiver composites the person over the cover's own background. Faithful real identity, fits
+the invisible channel (~90-130 kbps), real-time, simple codec (no neural generator, no DCVC).
+
+Pipeline per segment (a GOP of real frames):
+  encode(real_frames) -> payload bytes:
+     RVM matte each frame (recurrent) -> alpha; premultiplied person = real*alpha (bg black)
+     VP9-encode the person sequence + VP9-encode the alpha sequence
+     pack: [u8 ver][u16 W][u16 H][u8 nframes][u32 person_len][person_vp9][u32 alpha_len][alpha_vp9]
+  decode(payload) -> (person_frames_bgr_premult, alpha_frames_gray)
+
+This payload is what the Phasm coefficient stego embeds into the cover H.264 (no side channel).
+Everything here runs in the sidecar venv (.venv-ov: onnxruntime + PyAV + cv2). RVM on CPU ~63fps@540p.
+"""
+import os, io, struct, numpy as np, cv2, logging
+import av
+from fractions import Fraction
+
+log = logging.getLogger("enadox.person")
+
+RVM_PATH = os.environ.get(
+    "ENADOX_RVM",
+    r"C:/Users/Arvin/OneDrive/Desktop/CovertDefensesLLC/enadox-video-embed/models/rvm/rvm_mobilenetv3_fp32.onnx",
+)
+VER = 1
+
+
+# Phasm channel is bit-exact, so no error-resilient needed → spend those bits on quality.
+# RVM runs on the GPU now, so the CPU has budget for a sharper VP9 preset (cpu-used 4, 'good').
+# Speed pass 2026-11-23: deadline='realtime' + cpu-used 8 to cut per-segment VP9 encode time by
+# ~3x on CPU. The visible quality loss at the receiver is small compared to the fps gain the
+# live call gets back; we can lower cpu-used again once we have a faster encode path.
+_VP9_OPTS = {"deadline": "realtime", "cpu-used": "8", "lag-in-frames": "0", "row-mt": "1"}
+
+
+# ───────────────────────── IVF container helpers ─────────────────────────
+# Phasm's segment payload is independently decodable, so each segment's VP9 stream has to be a
+# self-contained IVF blob. We build that IVF around the persistent-encoder's packet(s) so the
+# receiver can still `av.open(buf, format='ivf')` on it exactly like before — no receiver
+# changes needed.
+def _ivf_header(fourcc: bytes, W: int, H: int, fps_num: int, fps_den: int, num_frames: int) -> bytes:
+    return struct.pack("<4sHH4sHHIIII",
+                       b"DKIF", 0, 32, fourcc,
+                       W, H, fps_num, fps_den, num_frames, 0)
+
+
+def _ivf_frame(payload: bytes, pts: int) -> bytes:
+    return struct.pack("<IQ", len(payload), pts) + payload
+
+
+class _PersistentVp9Encoder:
+    """One libvpx-vp9 CodecContext kept alive across segments.
+
+    The old code created a new `av.open(mode='w')` container + encoder for every segment, which at
+    gop=1 meant tearing down libvpx-vp9 once per frame. Startup cost for that encoder dominates at
+    this granularity. Here we create the encoder ONCE at construction, keep it open, and force a
+    keyframe on every input so each per-segment packet is independently decodable (VP9 keyframes
+    carry the sequence header). We then hand-build an IVF container around the packet(s) so the
+    receiver's decoder (av.open(..., format='ivf')) is unchanged.
+    """
+    def __init__(self, W: int, H: int, kbps: int, *, gray: bool = False, fps_num: int = 30, fps_den: int = 1):
+        self._enc = av.CodecContext.create("libvpx-vp9", "w")
+        self._enc.width = W
+        self._enc.height = H
+        self._enc.pix_fmt = "yuv420p"
+        self._enc.bit_rate = int(kbps * 1000)
+        # gop_size=1 asks for a keyframe every frame — in practice libvpx picks keyframes based on
+        # kf-max-dist so we also set that via options. Combined with lag-in-frames=0 this gives us
+        # synchronous keyframe-per-input behavior.
+        self._enc.gop_size = 1
+        self._enc.time_base = Fraction(fps_den, fps_num)
+        self._enc.options = {**_VP9_OPTS, "kf-max-dist": "1", "kf-min-dist": "0"}
+        self._gray = gray
+        self._W, self._H = W, H
+        self._fps_num, self._fps_den = fps_num, fps_den
+        self._pts = 0
+
+    def encode_segment(self, frames_bgr) -> bytes:
+        """Encode frames_bgr and return a self-decodable IVF blob (empty if no frames)."""
+        if not frames_bgr:
+            return b""
+        packets: list[bytes] = []
+        for f in frames_bgr:
+            arr = cv2.cvtColor(f, cv2.COLOR_GRAY2BGR) if self._gray else f
+            vf = av.VideoFrame.from_ndarray(arr, "bgr24").reformat(format="yuv420p")
+            vf.pts = self._pts
+            vf.time_base = Fraction(self._fps_den, self._fps_num)
+            self._pts += 1
+            for pkt in self._enc.encode(vf):
+                packets.append(bytes(pkt))
+        if not packets:
+            # libvpx-vp9 didn't emit anything this round — shouldn't happen with lag-in-frames=0
+            # + kf-max-dist=1, but guard: a zero-length payload is treated as "no update" downstream.
+            return b""
+        hdr = _ivf_header(b"VP90", self._W, self._H, self._fps_num, self._fps_den, len(packets))
+        body = b"".join(_ivf_frame(p, i) for i, p in enumerate(packets))
+        return hdr + body
+
+    def close(self):
+        try:
+            # drain any residual packets; libvpx-vp9 in realtime should have none
+            list(self._enc.encode(None))
+        except Exception:
+            pass
+
+
+def _vp9_decode(blob):
+    """Stateless: decode a single-segment IVF blob. Fresh container each call.
+
+    This path still runs on the receiver's static `PersonCodec.decode` for
+    backwards compatibility. Hot-path extract workers should use
+    `PersistentPersonDecoder` below instead — it keeps the libvpx-vp9 decoder
+    context alive across segments the same way the encoder refactor does on
+    the sender side, which is 10–20x per-segment faster at gop=1.
+    """
+    buf = io.BytesIO(blob)
+    c = av.open(buf, mode="r", format="ivf")
+    out = [fr.to_ndarray(format="bgr24") for fr in c.decode(video=0)]
+    c.close()
+    return out
+
+
+class _PersistentVp9Decoder:
+    """Long-lived libvpx-vp9 CodecContext for the receiver hot path.
+
+    With gop=1 every segment is a single VP9 keyframe which is independently
+    decodable. We keep one CodecContext per worker and feed each segment's
+    packet(s) directly, extracted from the IVF container framing. This avoids
+    the libvpx-vp9 init cost we were paying on every segment.
+
+    Thread-safety: NOT shared across threads — each extract worker owns its
+    own instance (the receiver pipeline creates one per bridge worker).
+    """
+    def __init__(self):
+        self._dec = av.CodecContext.create("libvpx-vp9", "r")
+
+    def decode_segment(self, ivf_blob: bytes, *, gray: bool = False):
+        """Parse the IVF container, feed each frame packet to the persistent
+        decoder, and return decoded BGR (or GRAY-converted BGR) frames."""
+        if not ivf_blob or len(ivf_blob) < 32:
+            return []
+        # IVF header is 32 bytes; frames follow as [u32 size][u64 pts][bytes]
+        frames_out = []
+        off = 32
+        while off + 12 <= len(ivf_blob):
+            size = struct.unpack_from("<I", ivf_blob, off)[0]
+            off += 12  # skip size(4) + pts(8)
+            if off + size > len(ivf_blob): break
+            pkt_bytes = ivf_blob[off:off+size]
+            off += size
+            try:
+                pkt = av.Packet(pkt_bytes)
+                for fr in self._dec.decode(pkt):
+                    arr = fr.to_ndarray(format="bgr24")
+                    frames_out.append(arr)
+            except Exception as e:
+                log.warning("vp9 packet decode failed: %s", str(e)[:120])
+                continue
+        return frames_out
+
+    def close(self):
+        try:
+            list(self._dec.decode(None))
+        except Exception:
+            pass
+
+
+class PersistentPersonDecoder:
+    """Per-worker decoder: wraps two `_PersistentVp9Decoder` (person + alpha)
+    for the receiver hot path. Mirrors `PersonCodec` on the sender side but
+    stateless about identity — just decode-and-return. Composition happens
+    elsewhere (see enadox_service._extract_one)."""
+    def __init__(self):
+        self._pdec = _PersistentVp9Decoder()
+        self._adec = _PersistentVp9Decoder()
+
+    def decode(self, payload: bytes):
+        """-> (person_frames_bgr_premult, alpha_frames_gray). Matches
+        PersonCodec.decode's return shape so composite() keeps working."""
+        if not payload or len(payload) < 10:
+            return [], []
+        ver, W, H, n = struct.unpack("<BHHB", payload[:6]); off = 6
+        if ver != VER:
+            return [], []
+        (plen,) = struct.unpack("<I", payload[off:off + 4]); off += 4
+        pv = payload[off:off + plen]; off += plen
+        (alen,) = struct.unpack("<I", payload[off:off + 4]); off += 4
+        av_ = payload[off:off + alen]
+        persons = self._pdec.decode_segment(pv)
+        alphas_bgr = self._adec.decode_segment(av_)
+        alphas = [cv2.cvtColor(a, cv2.COLOR_BGR2GRAY) for a in alphas_bgr]
+        return persons, alphas
+
+    def close(self):
+        self._pdec.close(); self._adec.close()
+
+
+class PersonCodec:
+    """Sender keeps RVM recurrent state across segments for temporal coherence.
+    Decoder is stateless per segment (each segment is an independent VP9 stream)."""
+
+    def __init__(self, W=640, H=360, person_kbps=120, alpha_kbps=15, dsr=0.4, device=None):
+        self.W, self.H = (W // 2) * 2, (H // 2) * 2
+        self.person_kbps, self.alpha_kbps = person_kbps, alpha_kbps
+        self.dsr = np.array([dsr], np.float32)
+        # RVM via NATIVE OpenVINO on the Arc GPU (34fps@540p / 62fps@360p); CPU fallback.
+        import openvino as ov
+        self._ov = ov; core = ov.Core()
+        model = core.read_model(RVM_PATH)
+        dev = device or os.environ.get("ENADOX_RVM_DEVICE", "GPU")
+        try:
+            self.cm = core.compile_model(model, dev); self.dev = dev
+        except Exception as e:
+            log.warning("RVM %s compile failed (%s); falling back to CPU", dev, str(e)[:80])
+            self.cm = core.compile_model(model, "CPU"); self.dev = "CPU"
+        self._out = {n: self.cm.output(n) for n in ["fgr", "pha", "r1o", "r2o", "r3o", "r4o"]}
+        self.reset()
+        # Persistent VP9 encoders — created once at construction, reused across segments.
+        # See _PersistentVp9Encoder for why (libvpx-vp9 startup cost was the dominant per-frame
+        # bottleneck at gop=1).
+        self._penc = _PersistentVp9Encoder(self.W, self.H, person_kbps)
+        self._aenc = _PersistentVp9Encoder(self.W, self.H, alpha_kbps, gray=True)
+        log.info("PersonCodec RVM on %s %dx%d person=%dk alpha=%dk (persistent VP9)",
+                 self.dev, self.W, self.H, person_kbps, alpha_kbps)
+
+    def reset(self):
+        self._rec = {"r1i": np.zeros([1, 1, 1, 1], np.float32), "r2i": np.zeros([1, 1, 1, 1], np.float32),
+                     "r3i": np.zeros([1, 1, 1, 1], np.float32), "r4i": np.zeros([1, 1, 1, 1], np.float32)}
+
+    def _matte(self, bgr):
+        """Return (person_premult_bgr, alpha_gray) at self.W x self.H. RVM on the downscaled frame."""
+        if bgr.shape[1] != self.W or bgr.shape[0] != self.H:
+            bgr = cv2.resize(bgr, (self.W, self.H))
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        src = rgb.transpose(2, 0, 1)[None]
+        r = self.cm({"src": src, "downsample_ratio": self.dsr, **self._rec})
+        fgr = r[self._out["fgr"]]; pha = r[self._out["pha"]]
+        self._rec = {"r1i": r[self._out["r1o"]], "r2i": r[self._out["r2o"]],
+                     "r3i": r[self._out["r3o"]], "r4i": r[self._out["r4o"]]}
+        a = pha[0, 0][:, :, None]
+        person_rgb = (rgb * a * 255).clip(0, 255).astype(np.uint8)        # premultiplied
+        person_bgr = cv2.cvtColor(person_rgb, cv2.COLOR_RGB2BGR)
+        alpha = (pha[0, 0] * 255).clip(0, 255).astype(np.uint8)
+        person_bgr = cv2.resize(person_bgr, (self.W, self.H))
+        alpha = cv2.resize(alpha, (self.W, self.H))
+        return person_bgr, alpha
+
+    def encode(self, real_frames_bgr):
+        if not real_frames_bgr:
+            return b""
+        persons, alphas = [], []
+        for f in real_frames_bgr:
+            p, a = self._matte(f)
+            persons.append(p); alphas.append(a)
+        pv = self._penc.encode_segment(persons)
+        av_ = self._aenc.encode_segment(alphas)
+        n = min(len(persons), 255)
+        return (struct.pack("<BHHB", VER, self.W, self.H, n)
+                + struct.pack("<I", len(pv)) + pv
+                + struct.pack("<I", len(av_)) + av_)
+
+    def close(self):
+        self._penc.close()
+        self._aenc.close()
+
+    @staticmethod
+    def decode(payload):
+        """-> (person_frames_bgr_premult, alpha_frames_gray). Stateless."""
+        if not payload or len(payload) < 10:
+            return [], []
+        ver, W, H, n = struct.unpack("<BHHB", payload[:6]); off = 6
+        if ver != VER:
+            return [], []
+        (plen,) = struct.unpack("<I", payload[off:off + 4]); off += 4
+        pv = payload[off:off + plen]; off += plen
+        (alen,) = struct.unpack("<I", payload[off:off + 4]); off += 4
+        av_ = payload[off:off + alen]
+        persons = _vp9_decode(pv)
+        alphas_bgr = _vp9_decode(av_)
+        alphas = [cv2.cvtColor(a, cv2.COLOR_BGR2GRAY) for a in alphas_bgr]
+        return persons, alphas
+
+
+def composite(person_bgr_premult, alpha_gray, cover_bgr):
+    """Receiver-side: lay the real person (premultiplied) over the cover background."""
+    H, W = cover_bgr.shape[:2]
+    p = cv2.resize(person_bgr_premult, (W, H)).astype(np.float32)
+    a = (cv2.resize(alpha_gray, (W, H)).astype(np.float32) / 255.0)[:, :, None]
+    return (p + cover_bgr.astype(np.float32) * (1 - a)).clip(0, 255).astype(np.uint8)
