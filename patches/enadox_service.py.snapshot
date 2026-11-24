@@ -45,6 +45,37 @@ def jenc(f): return cv2.imencode(".jpg",f,[cv2.IMWRITE_JPEG_QUALITY,92])[1].toby
 @app.get("/health")
 def health(): return {"status":"online","service":"enadox-video","log":LOGPATH}
 
+# Per-session rolling metrics. The pipelined embed/extract handlers register
+# their stats dicts here so a renderer or the Electron Debug menu can scrape
+# /metrics to drive a live perf panel. Session key = client host:port.
+_METRICS = {"embed_sessions": {}, "extract_sessions": {}}
+
+def _reg_session(kind, key, stats_ref):
+    _METRICS[f"{kind}_sessions"][key] = stats_ref
+
+def _unreg_session(kind, key):
+    _METRICS[f"{kind}_sessions"].pop(key, None)
+
+@app.get("/metrics")
+def metrics():
+    """Returns a snapshot of all live sidecar sessions and their rolling stats.
+
+    Shape: { embed: [{ key, ...stats }], extract: [{ key, ...stats }] }.
+    The Electron main process can poll this every ~1s to feed a real-time
+    fps/person_ms/phasm_ms panel; see OPTIMIZATION_ROADMAP.md Tier 1.1.
+    """
+    def snap(sessions):
+        out = []
+        for key, s in sessions.items():
+            try: out.append({"key": key, **dict(s)})
+            except Exception: pass
+        return out
+    return {
+        "embed":   snap(_METRICS["embed_sessions"]),
+        "extract": snap(_METRICS["extract_sessions"]),
+        "sidecar_log": LOGPATH
+    }
+
 @app.websocket("/ws/embed")
 async def embed(ws:WebSocket):
     await ws.accept(); cfg=json.loads(await ws.receive_text())
@@ -242,6 +273,7 @@ async def phasm_embed(ws:WebSocket):
     bridges = [_phasm.PhasmBridge() for _ in range(N_BRIDGES)]
     log.info(f"/ws/phasm-embed open {W}x{H} gop={gop} real={rw}x{rh}@{pk}kbps (coefficient-domain, pipelined x{N_BRIDGES})")
     jlog(ev="phasm_embed_open",W=W,H=H,gop=gop,rw=rw,rh=rh,rkbps=pk,bridges=N_BRIDGES)
+    _session_key = f"{ws.client.host}:{ws.client.port}" if ws.client else "?"
 
     # Bounded queues keep memory in check; a slow stage will back-pressure its upstream.
     # Size = 2 * N_BRIDGES is enough to keep the pool fed without hoarding frames.
@@ -253,7 +285,10 @@ async def phasm_embed(ws:WebSocket):
     out_buf = {}        # seq -> bytes (already framed for the wire)
     stop_flag = {"stop": False}
     stats = {"seg": 0, "plain": 0, "last_payload": 0, "last_annexb": 0,
-             "person_ms": 0.0, "phasm_ms": 0.0, "pipe_ms": 0.0}
+             "person_ms": 0.0, "phasm_ms": 0.0, "pipe_ms": 0.0,
+             "W": W, "H": H, "fps": fps, "bridges": N_BRIDGES,
+             "started_at": time.time()}
+    _reg_session("embed", _session_key, stats)
 
     async def recv_task():
         seq = 0
@@ -376,7 +411,8 @@ async def phasm_embed(ws:WebSocket):
     finally:
         stop_flag["stop"] = True
         log.info(f"/ws/phasm-embed closed; stats={stats}")
-        jlog(ev="phasm_embed_close", **stats)
+        jlog(ev="phasm_embed_close", **{k: stats[k] for k in stats if not isinstance(stats[k], (list, dict))})
+        _unreg_session("embed", _session_key)
         for b in bridges:
             try: b.close()
             except Exception: pass
@@ -444,12 +480,15 @@ async def phasm_extract(ws:WebSocket):
     log.info(f"/ws/phasm-extract open (coefficient-domain person-direct, pipelined x{N_BRIDGES}, persistent VP9)")
     jlog(ev="phasm_extract_open",person=True,bridges=N_BRIDGES)
 
+    _session_key = f"{ws.client.host}:{ws.client.port}" if ws.client else "?"
     QSIZE = max(4, 2 * N_BRIDGES)
     work_q: asyncio.Queue = asyncio.Queue(maxsize=QSIZE)   # (seq, au_bytes)
     out_cond = asyncio.Condition()
     out_buf: dict[int, list[bytes]] = {}                   # seq -> list of framed-jpeg-recon bytes
     stop_flag = {"stop": False}
-    stats = {"seg": 0, "fail": 0, "last_extract_ms": 0.0, "last_pipe_ms": 0.0}
+    stats = {"seg": 0, "fail": 0, "last_extract_ms": 0.0, "last_pipe_ms": 0.0,
+             "bridges": N_BRIDGES, "started_at": time.time()}
+    _reg_session("extract", _session_key, stats)
 
     async def recv_task():
         seq = 0
@@ -554,6 +593,7 @@ async def phasm_extract(ws:WebSocket):
         stop_flag["stop"] = True
         log.info(f"/ws/phasm-extract closed; stats={stats}")
         jlog(ev="phasm_extract_close", **stats)
+        _unreg_session("extract", _session_key)
         for b in bridges:
             try: b.close()
             except Exception: pass
