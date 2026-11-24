@@ -1,0 +1,60 @@
+diff --git a/JitsiConference.ts b/JitsiConference.ts
+index a7805558..2fd69cbd 100644
+--- a/JitsiConference.ts
++++ b/JitsiConference.ts
+@@ -1306,7 +1306,11 @@ export default class JitsiConference extends Listenable {
+                     mediaType: MediaType.VIDEO,
+                     screenshareCodec: this.qualityController.codecController.getScreenshareCodec('p2p')
+                 },
++                // ENADOX patch: also enable insertable streams when the ENADOX video injector is
++                // active in the renderer (window.ENADOX_VIDEO_ACTIVE === true). Lets the sender
++                // RTCRtpScriptTransform swap encoded frame.data with phasm-embedded H.264 AUs.
+                 enableInsertableStreams: this.isE2EEEnabled() || FeatureFlags.isRunInLiteModeEnabled()
++                    || (typeof window !== 'undefined' && (window as any).ENADOX_VIDEO_ACTIVE === true)
+             });
+ 
+         const localTracks = this.getLocalTracks();
+@@ -1633,7 +1637,9 @@ export default class JitsiConference extends Listenable {
+                         mediaType: MediaType.VIDEO,
+                         screenshareCodec: this.qualityController.codecController.getScreenshareCodec('jvb')
+                     },
++                    // ENADOX patch: see note on the first enableInsertableStreams site above.
+                     enableInsertableStreams: this.isE2EEEnabled() || FeatureFlags.isRunInLiteModeEnabled()
++                        || (typeof window !== 'undefined' && (window as any).ENADOX_VIDEO_ACTIVE === true)
+                 });
+         } catch (error) {
+             logger.error(error);
+@@ -1873,15 +1879,12 @@ export default class JitsiConference extends Listenable {
+                 }
+             }, jitterDelay);
+         } else if (this.jvbJingleSession === session) {
+-            logger.warn('ICE failed, force reloading the conference after failed attempts to re-establish ICE');
+-            Statistics.sendAnalyticsAndLog(
+-                createJvbIceFailedEvent(
+-                    AnalyticsEvents.ACTION_JVB_ICE_FAILED,
+-                    {
+-                        participantId: this.myUserId(),
+-                        userRegion: this.options.config.deploymentInfo?.userRegion
+-                    }));
+-            this.eventEmitter.emit(JitsiConferenceEvents.CONFERENCE_FAILED, JitsiConferenceErrors.ICE_FAILED);
++            // ENADOX patch: do NOT force a conference reload on exhausted JVB ICE retries. The
++            // P2P JingleSession is still carrying media fine; the full reload here was tearing
++            // down working 2-peer calls whenever Docker-for-Windows JVB UDP 10000 went idle.
++            // Log and swallow — rejoining the bridge is still attempted on the next restart path.
++            logger.warn('[ENADOX] JVB ICE failure suppressed to prevent forced conference reload; '
++                + 'P2P session (if any) continues.');
+         }
+     }
+ 
+@@ -1975,7 +1978,11 @@ export default class JitsiConference extends Listenable {
+                     mediaType: MediaType.VIDEO,
+                     screenshareCodec: this.qualityController.codecController.getScreenshareCodec('p2p')
+                 },
++                // ENADOX patch: also enable insertable streams when the ENADOX video injector is
++                // active in the renderer (window.ENADOX_VIDEO_ACTIVE === true). Lets the sender
++                // RTCRtpScriptTransform swap encoded frame.data with phasm-embedded H.264 AUs.
+                 enableInsertableStreams: this.isE2EEEnabled() || FeatureFlags.isRunInLiteModeEnabled()
++                    || (typeof window !== 'undefined' && (window as any).ENADOX_VIDEO_ACTIVE === true)
+             });
+ 
+         const localTracks = this.getLocalTracks();
