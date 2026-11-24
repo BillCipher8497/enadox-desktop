@@ -206,8 +206,8 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
 
 - [todo] [Claude] Local audio codec OR point at `meet.rishirajb.site` cloud. Decide
   based on where Rishi's allowlist stands when we get here.
-- [todo] [either] Wire cover-voice + Google OAuth sign-in. In Electron we can
-  intercept the OAuth redirect without the browser allowlist dance.
+- [blocked: waiting on Claude's Phase 7 backend and allowlist decision] [either] (started 2026-11-23 20:46 ET) Wire cover-voice + Google OAuth sign-in. In Electron we can
+  intercept the OAuth redirect without the browser allowlist dance. Claude's session end note confirms that audio is waiting on Rishi's allowlist.
 
 ### Phase 8 — packaging
 
