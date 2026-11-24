@@ -33,3 +33,15 @@ On the development machine, if electron-builder reports a symlink error extracti
 $env:ELECTRON_BUILDER_CACHE = Join-Path $PWD '.cache/electron-builder'
 npm run dist
 ```
+
+## Package the Python sidecar
+
+From the repository root, build the sidecar before running `npm run dist`:
+
+```powershell
+py -3.12 scripts/sidecar/build.py
+```
+
+The build reads the sibling `enadox-video-embed` source and RVM model, installs dependencies into `.cache/sidecar/venv`, and writes `resources/python-bundle/enadox-service.exe`. Electron Builder includes that executable at `resources/python-bundle/enadox-service.exe` in the installed application.
+
+The executable includes Python, OpenVINO, PyAV, and the RVM model. It listens on loopback port 8011 and writes service logs under `%LOCALAPPDATA%/ENADOX/results/live_logs`. Set `ENADOX_DATA_DIR` to redirect that data directory. The Phasm endpoints still require the WSL bridge.

@@ -11,6 +11,7 @@ import * as fs from 'node:fs';
 import { loadConfig, installConfigIpc } from './config.js';
 import { initSidecar, sidecar } from './sidecar.js';
 import { initTalkingPhoto, talkingPhoto } from './talkingPhoto.js';
+import { installJitsiIpc } from './jitsiBackend.js';
 
 // Single-instance lock so a second launch focuses the existing window instead
 // of starting a parallel app (which would double-spawn the sidecar + talking-photo).
@@ -143,6 +144,7 @@ function installCoreIpc(): void {
         jitsi: { running: false, containers: [] } // Phase 4
     }));
     installConfigIpc();
+    installJitsiIpc();
 }
 
 /** Boot the Python child processes. Non-fatal if config paths are missing —

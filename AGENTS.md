@@ -211,9 +211,10 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
 
 ### Phase 8 — packaging
 
-- [todo] [Codex] Figure out how to bundle the Python venv — likely `pyinstaller`
+- [done] [Codex] (started 2026-11-23 20:29 ET) Figure out how to bundle the Python venv — likely `pyinstaller`
   the sidecar into a single exe that doesn't need the venv at runtime. Big task,
-  can defer until the dev flow is solid.
+  can defer until the dev flow is solid. Built the single-file sidecar, verified /health without Python on PATH and verified the packaged executable hash.
+- [todo] [Claude] Use resources/python-bundle/enadox-service.exe for packaged sidecar launches and retain the Python command for development.
 - [todo] [Codex] Bundle a Windows-native phasm-live-bridge.exe so WSL isn't required.
   Needs cross-compiling the Rust at `/home/arvin/phasm-live-bridge`. Deferable.
 - [done] [Codex] (started 2026-11-23 20:26 ET) NSIS installer via electron-builder; sign with whatever cert Arvin

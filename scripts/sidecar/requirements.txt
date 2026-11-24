@@ -1,0 +1,12 @@
+# Development sidecar versions from the OpenVINO environment.
+av==19.0.2
+fastapi==0.141.1
+numba==0.67.0
+numpy==2.0.2
+opencv-python==5.0.0.93
+openvino==2025.4.1
+reedsolo==1.7.0
+scipy==1.18.1
+uvicorn==0.53.0
+websockets==17.1
+pyinstaller==6.22.3
