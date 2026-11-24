@@ -1,0 +1,27 @@
+{
+  "appId": "com.covertdefenses.enadox",
+  "productName": "ENADOX",
+  "directories": {
+    "output": "build",
+    "buildResources": "resources/branding"
+  },
+  "files": [
+    "dist/**/*",
+    "!dist/**/*.d.ts"
+  ],
+  "extraResources": [
+    {
+      "from": "resources",
+      "to": ".",
+      "filter": [
+        "**/*",
+        "!branding/**"
+      ]
+    }
+  ],
+  "win": {
+    "target": [
+      "nsis"
+    ]
+  }
+}

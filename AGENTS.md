@@ -122,8 +122,8 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
   react, react-dom, @types/react*, vite (renderer bundler). Added the four npm scripts and verified installation of the locked Electron 32 and React 18 toolchain.
 - [done] [Codex] (started 2026-11-23 20:23 ET) `tsconfig.json` (project refs: `main`, `preload`, `renderer`).
   ES2022 target, strict, moduleResolution bundler for renderer. Verified the strict ES2022 solution build for main, preload and the Vite renderer.
-- [todo] [Codex] `electron-builder.json` — Windows NSIS target, app id
-  `com.covertdefenses.enadox`, bundle `resources/` as extraResources.
+- [done] [Codex] (started 2026-11-23 20:24 ET) `electron-builder.json` — Windows NSIS target, app id
+  `com.covertdefenses.enadox`, bundle `resources/` as extraResources. Validated the NSIS configuration and resource mapping against electron-builder's installed schema.
 - [todo] [Codex] Vite config for the renderer with React + TS.
 - [todo] [Codex] `.gitignore`, `.eslintrc.cjs`, prettier config.
 - [todo] [Codex] `README.md` with the setup commands below (the ones in this file's
