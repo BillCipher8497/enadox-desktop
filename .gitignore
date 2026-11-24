@@ -1,0 +1,41 @@
+node_modules/
+dist/
+dist-electron/
+build/
+out/
+.vite/
+.turbo/
+.cache/
+
+# env
+.env
+.env.*
+!.env.example
+
+# logs
+*.log
+logs/
+
+# os
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# packaging artifacts
+*.exe
+*.msi
+*.nsis
+*.appx
+resources/python-bundle/
+resources/models/
+resources/bridge/
