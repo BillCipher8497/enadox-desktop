@@ -1,0 +1,555 @@
+"""ENADOX video-in-video sidecar for the live Jitsi test. Localhost FastAPI, same pattern
+as shadowmeet/server.py. The browser (TalkingPhotoVideoEffect) calls it per frame.
+
+  WS /ws/embed   : first msg = JSON {W,H,fps,kbps,delta,parity}; then per frame a binary
+                   [u32 cover_len][cover_jpeg][real_jpeg] -> returns embedded cover JPEG.
+  WS /ws/extract : first msg = JSON {W,H,fps,delta,parity}; then per frame a binary
+                   [received_cover_jpeg] -> returns 0+ messages [u32 frame_idx][recon_jpeg].
+  GET /health
+
+Heavy structured logging (JSONL) to results/live_logs/ so the whole run can be analyzed
+afterward: per-frame bytes, FIFO backlog (sender latency), recon count, RS frame-drops, timings.
+NOTE: the embed is pixel-domain and happens BEFORE the browser's WebRTC encode; this run
+MEASURES how much survives that encode (expected to be the limiting factor)."""
+import os,sys,io,json,time,struct,logging,datetime,asyncio
+sys.path.insert(0,os.path.dirname(__file__))
+import numpy as np, cv2
+# Pixel-path module (StreamSender/Receiver) is the DEPRECATED stopgap and pulls heavy deps
+# (reedsolo). The Phasm coefficient-domain path doesn't need it, so load it lazily — the
+# pixel endpoints import it on demand and fail clearly if its deps are absent.
+enadox_rt=None
+def _rt():
+    global enadox_rt
+    if enadox_rt is None:
+        import enadox_rt as _m; enadox_rt=_m
+    return enadox_rt
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import uvicorn
+
+ENV=r"C:/Users/Arvin/OneDrive/Desktop/CovertDefensesLLC/enadox-video-embed"
+LOGDIR=f"{ENV}/results/live_logs"; os.makedirs(LOGDIR,exist_ok=True)
+TS=datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+LOGPATH=f"{LOGDIR}/enadox_service_{TS}.log"
+JSONL=f"{LOGDIR}/enadox_frames_{TS}.jsonl"
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                    handlers=[logging.FileHandler(LOGPATH), logging.StreamHandler()])
+log=logging.getLogger("enadox")
+_jf=open(JSONL,"a",buffering=1)
+def jlog(**kw):
+    kw["t"]=time.time(); _jf.write(json.dumps(kw)+"\n")
+
+app=FastAPI()
+def jdec(b): return cv2.imdecode(np.frombuffer(b,np.uint8),cv2.IMREAD_COLOR)
+def jenc(f): return cv2.imencode(".jpg",f,[cv2.IMWRITE_JPEG_QUALITY,92])[1].tobytes()
+
+@app.get("/health")
+def health(): return {"status":"online","service":"enadox-video","log":LOGPATH}
+
+@app.websocket("/ws/embed")
+async def embed(ws:WebSocket):
+    await ws.accept(); cfg=json.loads(await ws.receive_text())
+    W=cfg.get("W",1280);H=cfg.get("H",720);fps=cfg.get("fps",25)
+    kbps=cfg.get("kbps",100);delta=cfg.get("delta",220);parity=cfg.get("parity",64)
+    S=_rt().StreamSender(W,H,fps,av1_kbps=kbps,delta=delta,parity=parity)
+    log.info(f"/ws/embed open {W}x{H} kbps={kbps} delta={delta} parity={parity} codec=VP9 coded_n={S.coded_n}/{S.nb}")
+    jlog(ev="embed_open",W=W,H=H,kbps=kbps,delta=delta,parity=parity)
+    i=0
+    try:
+        while True:
+            msg=await ws.receive_bytes(); t0=time.time()
+            clen=struct.unpack(">I",msg[:4])[0]
+            cover=jdec(msg[4:4+clen]); real=jdec(msg[4+clen:])
+            if cover is None: await ws.send_bytes(b""); continue
+            emb=S.push(cover, real if real is not None else None)
+            out=jenc(emb); await ws.send_bytes(out)
+            dt=(time.time()-t0)*1000
+            if i%25==0: log.info(f"embed f{i} cover={clen}B real={len(msg)-4-clen}B backlog={S.backlog_frames()}f {dt:.1f}ms")
+            jlog(ev="embed",i=i,cover_b=clen,real_b=len(msg)-4-clen,out_b=len(out),backlog=S.backlog_frames(),ms=round(dt,1))
+            i+=1
+    except WebSocketDisconnect:
+        log.info(f"/ws/embed closed after {i} frames"); jlog(ev="embed_close",frames=i)
+
+@app.websocket("/ws/extract")
+async def extract(ws:WebSocket):
+    await ws.accept(); cfg=json.loads(await ws.receive_text())
+    W=cfg.get("W",1280);H=cfg.get("H",720);fps=cfg.get("fps",25)
+    delta=cfg.get("delta",220);parity=cfg.get("parity",64)
+    R=_rt().StreamReceiver(W,H,fps,delta=delta,parity=parity)
+    log.info(f"/ws/extract open {W}x{H} delta={delta} parity={parity}")
+    jlog(ev="extract_open",W=W,H=H,delta=delta,parity=parity)
+    i=0; total_recon=0
+    try:
+        while True:
+            msg=await ws.receive_bytes(); t0=time.time()
+            frame=jdec(msg)
+            if frame is None: continue
+            outs=R.push(frame)
+            for rf in outs:
+                total_recon+=1
+                await ws.send_bytes(struct.pack(">I",total_recon)+jenc(rf))
+            dt=(time.time()-t0)*1000
+            if i%25==0: log.info(f"extract f{i} recon_out={len(outs)} total={total_recon} rs_drops={R.errors} {dt:.1f}ms")
+            jlog(ev="extract",i=i,recon_out=len(outs),total_recon=total_recon,rs_drops=R.errors,stream_buf=len(R.stream),ms=round(dt,1))
+            i+=1
+    except WebSocketDisconnect:
+        log.info(f"/ws/extract closed: {i} frames in, {total_recon} recon out, {R.errors} RS drops")
+        jlog(ev="extract_close",frames=i,recon=total_recon,rs_drops=R.errors)
+
+# ---- INJECT mode (bitstream path): sidecar owns the encode, browser injects our encoded
+#      frames via RTCRtpScriptTransform so the browser never re-encodes -> embed survives. ----
+import av as _av, io as _io
+def _mk_vp8_enc(W,H,kbps):
+    """Persistent all-intra VP8 encoder with CBR rate control (reused across frames)."""
+    e=_av.CodecContext.create('libvpx','w'); e.width=(W//8)*8; e.height=(H//8)*8; e.pix_fmt='yuv420p'
+    e.bit_rate=kbps*1000; e.gop_size=1; e.framerate=25
+    e.options={'deadline':'realtime','cpu-used':'6','g':'1','keyint_min':'1','error-resilient':'1',
+               'rc_min_quantizer':'4','rc_max_quantizer':'56','bufsize':str(kbps*1000),'minrate':str(kbps*1000),'maxrate':str(kbps*1000)}
+    return e
+def _vp8_enc_frame(frame, enc):
+    vf=_av.VideoFrame.from_ndarray(frame,'bgr24').reformat(format='yuv420p')
+    return b"".join(bytes(p) for p in enc.encode(vf))
+def _vp8_dec_frame(data):
+    d=_av.CodecContext.create('vp8','r')   # fresh per all-intra frame (each independently decodable)
+    out=[fr.to_ndarray(format='bgr24') for fr in d.decode(_av.Packet(data))]
+    return out[0] if out else None
+
+@app.websocket("/ws/inject-embed")
+async def inject_embed(ws:WebSocket):
+    await ws.accept(); cfg=json.loads(await ws.receive_text())
+    W=cfg.get("W",1280);H=cfg.get("H",720);fps=cfg.get("fps",25)
+    kbps=cfg.get("kbps",100);delta=cfg.get("delta",700);parity=cfg.get("parity",64)
+    enc_kbps=cfg.get("enc_kbps",3500)   # all-intra cover encode target (separate from the VP9-of-real channel)
+    # RELIABLE TEST CONFIG (measured 2026-11-21, test_inject_robust.py, 3 trials each): delta=700 +
+    # enc_kbps=3500 -> ~7.5 Mbps injected, 0 RS drops EVERY trial, bit-exact (50/60 = FIFO latency).
+    # delta=400 sits on the survival edge (a single RS drop cascades to total loss); delta=220 dies
+    # (0 recon) because our own all-intra VP8 quantizes the pixel embed away. Lower bitrate at this
+    # reliability needs true coefficient-domain embed (Phasm's way, compiler/Modal, pending approval).
+    S=_rt().StreamSender(W,H,fps,av1_kbps=kbps,delta=delta,parity=parity)
+    enc=_mk_vp8_enc(W,H,enc_kbps)        # ONE persistent CBR encoder for the connection (rate-controlled)
+    log.info(f"/ws/inject-embed open {W}x{H} enc_kbps={enc_kbps} (sidecar owns encode; all-intra VP8 inject)")
+    jlog(ev="inject_embed_open",W=W,H=H,kbps=kbps,enc_kbps=enc_kbps,delta=delta,parity=parity); i=0
+    try:
+        while True:
+            msg=await ws.receive_bytes(); t0=time.time()
+            clen=struct.unpack(">I",msg[:4])[0]; cover=jdec(msg[4:4+clen]); real=jdec(msg[4+clen:])
+            if cover is None: await ws.send_bytes(b""); continue
+            emb=S.push(cover, real if real is not None else None)   # embed VP9-of-real into cover pixels
+            enc_b=_vp8_enc_frame(emb, enc)                          # our controlled single encode (all-intra, CBR)
+            await ws.send_bytes(struct.pack(">I",len(enc_b))+b"\x01"+enc_b)   # [len][keyframe=1][vp8 bytes]
+            dt=(time.time()-t0)*1000
+            jlog(ev="inject_embed",i=i,enc_b=len(enc_b),backlog=S.backlog_frames(),ms=round(dt,1))
+            if i%25==0: log.info(f"inject-embed f{i} enc={len(enc_b)}B backlog={S.backlog_frames()}f {dt:.1f}ms")
+            i+=1
+    except WebSocketDisconnect: log.info(f"/ws/inject-embed closed after {i} frames"); jlog(ev="inject_embed_close",frames=i)
+
+@app.websocket("/ws/inject-extract")
+async def inject_extract(ws:WebSocket):
+    await ws.accept(); cfg=json.loads(await ws.receive_text())
+    W=cfg.get("W",1280);H=cfg.get("H",720);fps=cfg.get("fps",25);delta=cfg.get("delta",700);parity=cfg.get("parity",64)
+    R=_rt().StreamReceiver(W,H,fps,delta=delta,parity=parity)
+    log.info(f"/ws/inject-extract open {W}x{H} delta={delta}"); jlog(ev="inject_extract_open"); i=0; total=0
+    try:
+        while True:
+            msg=await ws.receive_bytes(); t0=time.time()
+            frame=_vp8_dec_frame(msg)                               # decode our injected VP8
+            if frame is None: continue
+            for rf in R.push(frame):
+                total+=1; await ws.send_bytes(struct.pack(">I",total)+jenc(rf))
+            dt=(time.time()-t0)*1000
+            jlog(ev="inject_extract",i=i,total_recon=total,rs_drops=R.errors,ms=round(dt,1))
+            if i%25==0: log.info(f"inject-extract f{i} total={total} rs_drops={R.errors} {dt:.1f}ms")
+            i+=1
+    except WebSocketDisconnect: log.info(f"/ws/inject-extract closed: {i} in {total} recon {R.errors} drops"); jlog(ev="inject_extract_close",frames=i,recon=total,rs_drops=R.errors)
+
+# ---- PHASM mode (coefficient-domain path): the real video is carried INSIDE the cover's
+#      compressed H.264 coefficients (Phasm STC embed) via the WSL bridge. Invisible +
+#      bit-exact (validated 2026-11-21). Segment = one GOP; sender buffers a GOP, embeds,
+#      and returns per-frame H.264 access units (1-segment pipeline delay). See phasm_live.py. ----
+import phasm_live as _phasm
+
+import zlib as _zlib
+_AUDBG = os.environ.get("ENADOX_AU_DBG") == "1"
+def _au_fp(data: bytes) -> str:
+    """Fingerprint an Annex-B access unit: length, crc32, and the list of NAL types present.
+    Lets us compare what embed SENT vs what extract RECEIVED (did WebRTC alter the bytes?)."""
+    nals = []; n = len(data); j = 0
+    while j < n - 3:
+        if data[j] == 0 and data[j+1] == 0 and (data[j+2] == 1 or (data[j+2] == 0 and j+3 < n and data[j+3] == 1)):
+            off = 3 if data[j+2] == 1 else 4
+            if j + off < n: nals.append(data[j+off] & 0x1f)
+            j += off
+        else:
+            j += 1
+    return f"len={n} crc={_zlib.crc32(data) & 0xffffffff:08x} nals={nals}"
+
+@app.websocket("/ws/phasm-embed")
+async def phasm_embed(ws:WebSocket):
+    """Pipelined phasm embed for the live call.
+
+    Stages (each its own asyncio task, decoupled by bounded queues):
+      A recv_task     : WS recv -> JPEG decode (threaded) -> person_q
+      B person_task   : SERIAL. PersonCodec.encode(real) -> payload (RVM recurrent state lives
+                        here, so this stage is single-worker). Also bgr_to_i420(cover).
+                        -> phasm_q
+      C phasm pool    : N workers, each owns a PhasmBridge subprocess. Parallel embed; writes
+                        out[seq] = AU bytes. Order is preserved on the wire by send_task.
+      D send_task     : emits out[seq] as soon as the next-in-line seq is ready.
+
+    This path is the person-direct (gop=1) hot path; the legacy non-person branch keeps the
+    old single-bridge serial PhasmSender since person_kbps/alpha_kbps aren't set.
+    """
+    await ws.accept(); cfg=json.loads(await ws.receive_text())
+    W=cfg.get("W",640);H=cfg.get("H",360);fps=cfg.get("fps",25);gop=cfg.get("gop",30);qp=cfg.get("qp",26)
+    rw=cfg.get("real_w",128);rh=cfg.get("real_h",72);rkbps=cfg.get("real_kbps",12)
+    person=bool(cfg.get("person",False)); pk=cfg.get("person_kbps",85); ak=cfg.get("alpha_kbps",12)
+
+    # ── Non-person legacy path keeps the serial PhasmSender ──
+    if not person or gop != 1:
+        bridge=_phasm.PhasmBridge()
+        snd=_phasm.PhasmSender(bridge,W,H,fps=fps,gop=gop,qp=qp,real_w=rw,real_h=rh,real_kbps=rkbps,
+                               person_mode=person,person_kbps=pk,alpha_kbps=ak)
+        log.info(f"/ws/phasm-embed open {W}x{H} gop={gop} real={rw}x{rh}@{rkbps}kbps (legacy serial)")
+        jlog(ev="phasm_embed_open",W=W,H=H,gop=gop,rw=rw,rh=rh,rkbps=rkbps); i=0
+        try:
+            while True:
+                msg=await ws.receive_bytes(); t0=time.time()
+                clen=struct.unpack(">I",msg[:4])[0]
+                cover, real = await asyncio.to_thread(
+                    lambda: (jdec(msg[4:4+clen]), jdec(msg[4+clen:])))
+                if cover is None: await ws.send_bytes(b""); continue
+                au=await asyncio.to_thread(snd.push, cover, real if real is not None else None)
+                if au is None:
+                    await ws.send_bytes(b"")
+                else:
+                    is_key, data = au
+                    if _AUDBG: log.info("AUDBG EMB #%d %s key=%d", i, _au_fp(data), 1 if is_key else 0)
+                    await ws.send_bytes(struct.pack(">I",len(data))+(b"\x01" if is_key else b"\x00")+data)
+                dt=(time.time()-t0)*1000
+                if i%25==0:
+                    st=snd.stats(); log.info(f"phasm-embed f{i} seg={st['seg']} plain={st['plain']} payload={st['payload_b']}B queued={st['queued']} {dt:.1f}ms")
+                jlog(ev="phasm_embed",i=i,**snd.stats(),ms=round(dt,1)); i+=1
+        except WebSocketDisconnect:
+            log.info(f"/ws/phasm-embed closed after {i} frames; stats={snd.stats()}"); jlog(ev="phasm_embed_close",frames=i,**snd.stats())
+            bridge.close()
+        return
+
+    # ── Person-direct PIPELINED path (gop=1 only) ──
+    import person_codec as _pc
+    N_BRIDGES = int(os.environ.get("ENADOX_BRIDGES", "3"))
+    pcodec = _pc.PersonCodec(W=rw, H=rh, person_kbps=pk, alpha_kbps=ak)
+    log.info("PhasmSender PERSON-DIRECT PIPELINED on (%dx%d person=%dk alpha=%dk bridges=%d)",
+             rw, rh, pk, ak, N_BRIDGES)
+    bridges = [_phasm.PhasmBridge() for _ in range(N_BRIDGES)]
+    log.info(f"/ws/phasm-embed open {W}x{H} gop={gop} real={rw}x{rh}@{pk}kbps (coefficient-domain, pipelined x{N_BRIDGES})")
+    jlog(ev="phasm_embed_open",W=W,H=H,gop=gop,rw=rw,rh=rh,rkbps=pk,bridges=N_BRIDGES)
+
+    # Bounded queues keep memory in check; a slow stage will back-pressure its upstream.
+    # Size = 2 * N_BRIDGES is enough to keep the pool fed without hoarding frames.
+    QSIZE = max(4, 2 * N_BRIDGES)
+    person_q: asyncio.Queue = asyncio.Queue(maxsize=QSIZE)  # (seq, cover_bgr, real_bgr)
+    phasm_q: asyncio.Queue  = asyncio.Queue(maxsize=QSIZE)  # (seq, cover_bgr, i420, payload)
+    out_lock = asyncio.Lock()
+    out_cond = asyncio.Condition(out_lock)
+    out_buf = {}        # seq -> bytes (already framed for the wire)
+    stop_flag = {"stop": False}
+    stats = {"seg": 0, "plain": 0, "last_payload": 0, "last_annexb": 0,
+             "person_ms": 0.0, "phasm_ms": 0.0, "pipe_ms": 0.0}
+
+    async def recv_task():
+        seq = 0
+        try:
+            while not stop_flag["stop"]:
+                msg = await ws.receive_bytes()
+                clen = struct.unpack(">I", msg[:4])[0]
+                cover_b = msg[4:4+clen]; real_b = msg[4+clen:]
+                cover, real = await asyncio.to_thread(
+                    lambda: (jdec(cover_b), jdec(real_b)))
+                if cover is None:
+                    # Mark this seq as an empty response slot.
+                    async with out_cond:
+                        out_buf[seq] = b""
+                        out_cond.notify_all()
+                    seq += 1
+                    continue
+                await person_q.put((seq, cover, real, time.time()))
+                seq += 1
+        except WebSocketDisconnect:
+            stop_flag["stop"] = True
+        except Exception as e:
+            log.exception("recv_task: %s", e); stop_flag["stop"] = True
+        finally:
+            # Signal downstream to drain
+            for _ in range(1): await person_q.put(None)
+
+    async def person_task():
+        """Serial (RVM recurrent state). bgr_to_i420 also here so phasm workers can run pure."""
+        try:
+            while True:
+                item = await person_q.get()
+                if item is None:
+                    # signal all phasm workers to stop
+                    for _ in range(N_BRIDGES): await phasm_q.put(None)
+                    return
+                seq, cover, real, t_in = item
+                if real is None: real = cover
+                t0 = time.time()
+                payload, i420 = await asyncio.to_thread(_person_and_i420, pcodec, real, cover, W, H)
+                stats["person_ms"] = (time.time() - t0) * 1000
+                stats["last_payload"] = len(payload)
+                await phasm_q.put((seq, cover, i420, payload, t_in))
+        except Exception as e:
+            log.exception("person_task: %s", e)
+            stop_flag["stop"] = True
+            for _ in range(N_BRIDGES): await phasm_q.put(None)
+
+    async def phasm_worker(bridge, worker_idx):
+        try:
+            while True:
+                item = await phasm_q.get()
+                if item is None:
+                    return
+                seq, cover, i420, payload, t_in = item
+                t0 = time.time()
+                ok, body = await asyncio.to_thread(
+                    bridge.embed, W, H, fps, 1, qp, 1, [i420], payload)
+                stats["phasm_ms"] = (time.time() - t0) * 1000
+                if ok:
+                    annexb = body; stats["seg"] += 1
+                else:
+                    log.warning("phasm embed fell back to plain (seq %d/worker %d): %s",
+                                seq, worker_idx, body.decode('utf-8', 'replace')[:120])
+                    annexb = await asyncio.to_thread(
+                        _phasm.encode_plain_h264, [cover], W, H, fps, 1)
+                    stats["plain"] += 1
+                stats["last_annexb"] = len(annexb)
+                aus = _phasm.split_access_units(annexb)
+                if aus:
+                    is_key, data = aus[0]
+                    framed = struct.pack(">I", len(data)) + (b"\x01" if is_key else b"\x00") + data
+                else:
+                    framed = b""
+                stats["pipe_ms"] = (time.time() - t_in) * 1000
+                async with out_cond:
+                    out_buf[seq] = framed
+                    out_cond.notify_all()
+        except Exception as e:
+            log.exception("phasm_worker[%d]: %s", worker_idx, e)
+            stop_flag["stop"] = True
+            async with out_cond:
+                out_cond.notify_all()
+
+    async def send_task():
+        next_seq = 0
+        log_every = 25
+        try:
+            while not stop_flag["stop"]:
+                async with out_cond:
+                    while next_seq not in out_buf and not stop_flag["stop"]:
+                        await out_cond.wait()
+                    if stop_flag["stop"] and next_seq not in out_buf:
+                        return
+                    data = out_buf.pop(next_seq)
+                if data:
+                    await ws.send_bytes(data)
+                else:
+                    await ws.send_bytes(b"")
+                if next_seq % log_every == 0:
+                    log.info(
+                        f"phasm-embed f{next_seq} seg={stats['seg']} plain={stats['plain']} "
+                        f"payload={stats['last_payload']}B person={stats['person_ms']:.0f}ms "
+                        f"phasm={stats['phasm_ms']:.0f}ms pipe={stats['pipe_ms']:.0f}ms "
+                        f"q_person={person_q.qsize()} q_phasm={phasm_q.qsize()} out_buf={len(out_buf)}")
+                jlog(ev="phasm_embed", i=next_seq, **{k: stats[k] for k in ("seg","plain","last_payload","last_annexb","person_ms","phasm_ms","pipe_ms")})
+                next_seq += 1
+        except Exception as e:
+            log.info("send_task ended: %s", e)
+        finally:
+            stop_flag["stop"] = True
+
+    tasks = [
+        asyncio.create_task(recv_task()),
+        asyncio.create_task(person_task()),
+        asyncio.create_task(send_task()),
+    ] + [asyncio.create_task(phasm_worker(b, i)) for i, b in enumerate(bridges)]
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        stop_flag["stop"] = True
+        log.info(f"/ws/phasm-embed closed; stats={stats}")
+        jlog(ev="phasm_embed_close", **stats)
+        for b in bridges:
+            try: b.close()
+            except Exception: pass
+
+
+def _person_and_i420(pcodec, real_bgr, cover_bgr, W, H):
+    """One-shot helper for the person pipeline stage.
+
+    Encodes the person (RVM + VP9 — serial on the caller thread, since pcodec has recurrent state)
+    and converts the cover to I420. Returning both from one `to_thread` call saves a context switch.
+    """
+    import phasm_live as _pl
+    payload = pcodec.encode([real_bgr])
+    i420 = _pl.bgr_to_i420(cover_bgr, W, H)
+    return payload, i420
+
+@app.websocket("/ws/phasm-extract")
+async def phasm_extract(ws:WebSocket):
+    """Pipelined extract for the person-direct receiver.
+
+    Mirror of the pipelined phasm_embed sender: with gop=1 every received AU
+    is a self-contained segment, so we can fan them out to a pool of N
+    PhasmBridge workers running bridge.extract + VP9 decode + composite in
+    parallel. A reorder buffer emits composited frames in strict receive
+    order on the wire. For non-person mode (gop>1 segments spanning multiple
+    AUs) we keep the serial PhasmReceiver path since it needs segment-start
+    accumulator state.
+    """
+    await ws.accept(); cfg=json.loads(await ws.receive_text())
+    person=bool(cfg.get("person",False))
+
+    # Non-person legacy path: serial, same as before.
+    if not person:
+        bridge=_phasm.PhasmBridge(); rcv=_phasm.PhasmReceiver(bridge, person_mode=person)
+        log.info("/ws/phasm-extract open (legacy serial%s)", " person-direct" if person else "")
+        jlog(ev="phasm_extract_open",person=person); i=0; total=0
+        try:
+            while True:
+                msg=await ws.receive_bytes(); t0=time.time()
+                if _AUDBG: log.info("AUDBG EXT #%d %s", i, _au_fp(msg))
+                for rf in await asyncio.to_thread(rcv.push_au, msg):
+                    total+=1; await ws.send_bytes(struct.pack(">I",total)+jenc(rf))
+                dt=(time.time()-t0)*1000
+                if i%25==0:
+                    st=rcv.stats(); log.info(f"phasm-extract f{i} seg={st['seg']} fail={st['fail']} recon_total={total} {dt:.1f}ms")
+                jlog(ev="phasm_extract",i=i,**rcv.stats(),recon_total=total,ms=round(dt,1)); i+=1
+        except WebSocketDisconnect:
+            for rf in rcv.flush():
+                total+=1
+                try: await ws.send_bytes(struct.pack(">I",total)+jenc(rf))
+                except Exception: pass
+            log.info(f"/ws/phasm-extract closed: {i} AUs in, {total} recon, stats={rcv.stats()}")
+            jlog(ev="phasm_extract_close",frames=i,recon=total,**rcv.stats())
+            bridge.close()
+        return
+
+    # ── Person-direct PIPELINED extract ──
+    import person_codec as _pc
+    N_BRIDGES = int(os.environ.get("ENADOX_EXTRACT_BRIDGES", os.environ.get("ENADOX_BRIDGES", "3")))
+    bridges = [_phasm.PhasmBridge() for _ in range(N_BRIDGES)]
+    log.info(f"/ws/phasm-extract open (coefficient-domain person-direct, pipelined x{N_BRIDGES})")
+    jlog(ev="phasm_extract_open",person=True,bridges=N_BRIDGES)
+
+    QSIZE = max(4, 2 * N_BRIDGES)
+    work_q: asyncio.Queue = asyncio.Queue(maxsize=QSIZE)   # (seq, au_bytes)
+    out_cond = asyncio.Condition()
+    out_buf: dict[int, list[bytes]] = {}                   # seq -> list of framed-jpeg-recon bytes
+    stop_flag = {"stop": False}
+    stats = {"seg": 0, "fail": 0, "last_extract_ms": 0.0, "last_pipe_ms": 0.0}
+
+    async def recv_task():
+        seq = 0
+        try:
+            while not stop_flag["stop"]:
+                msg = await ws.receive_bytes()
+                await work_q.put((seq, msg, time.time()))
+                seq += 1
+        except WebSocketDisconnect:
+            stop_flag["stop"] = True
+        except Exception as e:
+            log.exception("extract recv_task: %s", e); stop_flag["stop"] = True
+        finally:
+            for _ in range(N_BRIDGES): await work_q.put(None)
+
+    def _extract_one(bridge, au_bytes):
+        """Blocking: bridge.extract + PersonCodec.decode + cover decode + composite."""
+        ok, body = bridge.extract(au_bytes)
+        if not ok:
+            return "fail", body
+        try:
+            persons, alphas = _pc.PersonCodec.decode(body)
+        except Exception as e:
+            return "persondec_fail", str(e)
+        try:
+            covers = _phasm.decode_h264_annexb(au_bytes)
+        except Exception as e:
+            return "coverdec_fail", str(e)
+        if not covers or not persons:
+            return "ok", persons
+        out = []
+        for i in range(min(len(persons), len(alphas), len(covers))):
+            out.append(_pc.composite(persons[i], alphas[i], covers[i]))
+        return "ok", out
+
+    async def extract_worker(bridge, worker_idx):
+        try:
+            while True:
+                item = await work_q.get()
+                if item is None: return
+                seq, au_bytes, t_in = item
+                t0 = time.time()
+                kind, result = await asyncio.to_thread(_extract_one, bridge, au_bytes)
+                stats["last_extract_ms"] = (time.time() - t0) * 1000
+                framed_list: list[bytes] = []
+                if kind == "ok":
+                    stats["seg"] += 1
+                    for rf in result:
+                        framed_list.append(jenc(rf))
+                else:
+                    stats["fail"] += 1
+                    log.warning("extract[%d] seq=%d %s: %s", worker_idx, seq, kind,
+                                (result if isinstance(result,str) else str(result))[:120])
+                stats["last_pipe_ms"] = (time.time() - t_in) * 1000
+                async with out_cond:
+                    out_buf[seq] = framed_list
+                    out_cond.notify_all()
+        except Exception as e:
+            log.exception("extract_worker[%d]: %s", worker_idx, e)
+            stop_flag["stop"] = True
+            async with out_cond:
+                out_cond.notify_all()
+
+    async def send_task():
+        next_seq = 0; total = 0
+        log_every = 25
+        try:
+            while not stop_flag["stop"]:
+                async with out_cond:
+                    while next_seq not in out_buf and not stop_flag["stop"]:
+                        await out_cond.wait()
+                    if stop_flag["stop"] and next_seq not in out_buf: return
+                    frames = out_buf.pop(next_seq)
+                for jpg in frames:
+                    total += 1
+                    await ws.send_bytes(struct.pack(">I", total) + jpg)
+                if next_seq % log_every == 0:
+                    log.info(
+                        f"phasm-extract f{next_seq} seg={stats['seg']} fail={stats['fail']} "
+                        f"recon_total={total} extract={stats['last_extract_ms']:.0f}ms "
+                        f"pipe={stats['last_pipe_ms']:.0f}ms q={work_q.qsize()} buf={len(out_buf)}")
+                jlog(ev="phasm_extract", i=next_seq,
+                     **{k: stats[k] for k in ("seg","fail","last_extract_ms","last_pipe_ms")},
+                     recon_total=total)
+                next_seq += 1
+        except Exception as e:
+            log.info("extract send_task ended: %s", e)
+        finally:
+            stop_flag["stop"] = True
+
+    tasks = [
+        asyncio.create_task(recv_task()),
+        asyncio.create_task(send_task()),
+    ] + [asyncio.create_task(extract_worker(b, i)) for i, b in enumerate(bridges)]
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        stop_flag["stop"] = True
+        log.info(f"/ws/phasm-extract closed; stats={stats}")
+        jlog(ev="phasm_extract_close", **stats)
+        for b in bridges:
+            try: b.close()
+            except Exception: pass
+
+if __name__=="__main__":
+    log.info(f"ENADOX video sidecar starting on :8011 | logs: {LOGPATH} , {JSONL}")
+    uvicorn.run(app, host="127.0.0.1", port=8011, log_level="warning")
