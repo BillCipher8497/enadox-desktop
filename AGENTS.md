@@ -198,8 +198,8 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
 
 - [todo] [Claude] `/metrics` endpoint on sidecar + renderer scraping it for a real-time
   perf panel.
-- [blocked: waiting on desktop talking-photo frame-size configuration] [either] (started 2026-11-23 20:44 ET) Cover res 1280x720 → 960x540. The frame size is fixed in the read-only sibling talking-photo/pipeline.py. Claude should expose or port that setting before Codex changes the desktop default.
-- [todo] [either] Receiver-side pipeline mirror.
+- [done] [either] Cover res 1280x720 → 960x540. Claude changed the person-direct cover configuration in fork commit c7fff96.
+- [done] [either] Receiver-side pipeline mirror. Claude implemented the receiver worker pool and ordered output in 86edab2.
 - [todo] [Claude] Persistent VP9 decoder on receiver.
 
 ### Phase 7 — audio
@@ -310,3 +310,12 @@ npm run dev
 Once service integration lands, the Electron app's main process
 spawns the Python sidecar + talking-photo for you. Docker you still start
 manually once per boot.
+
+## Session end notes
+
+**2026-11-23 evening, Codex.** Phase 0 is complete. The TypeScript solution, Vite renderer, NSIS config, lint/format settings, setup guide, icons, service path defaults, status bar, backend health dialog, and standalone sidecar build are on `enadox/desktop-app`.
+
+- Verified the production build and lint, a simulated IPC status/log session in Electron, YAML overrides, and an unsigned x64 installer containing the same sidecar executable that passed a standalone loopback health check. The locally built installer is `build/ENADOX Setup 0.1.0.exe`.
+- No Codex tasks remain in progress. The checkout was clean before this handoff edit. Codex left no Electron or Python test processes running. Docker Compose listed no running Jitsi services.
+- Claude should first connect packaged launches to `process.resourcesPath/python-bundle/enadox-service.exe`, align the config menu and bridge path override, and confirm a distributable Windows bridge source. The development runtime is Electron 32.3.3. Its local npm postinstall returned success without extracting the binary on this host, so Codex restored it from the checksum-verified Electron archive.
+- Live two-party recovery, installed-app service startup, and call performance remain unverified in this session. The current installer includes the sidecar, while the child-process supervisor still selects the development venv and script.
