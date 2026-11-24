@@ -198,7 +198,7 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
 
 - [todo] [Claude] `/metrics` endpoint on sidecar + renderer scraping it for a real-time
   perf panel.
-- [todo] [either] Cover res 1280x720 → 960x540.
+- [blocked: waiting on desktop talking-photo frame-size configuration] [either] (started 2026-11-23 20:44 ET) Cover res 1280x720 → 960x540. The frame size is fixed in the read-only sibling talking-photo/pipeline.py. Claude should expose or port that setting before Codex changes the desktop default.
 - [todo] [either] Receiver-side pipeline mirror.
 - [todo] [Claude] Persistent VP9 decoder on receiver.
 
