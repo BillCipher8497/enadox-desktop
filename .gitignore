@@ -39,3 +39,4 @@ venv/
 resources/python-bundle/
 resources/models/
 resources/bridge/
+*.tsbuildinfo

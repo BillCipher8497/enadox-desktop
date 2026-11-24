@@ -125,7 +125,7 @@ Each of these was a browser-specific workaround. In Electron we don't need any.
 - [done] [Codex] (started 2026-11-23 20:24 ET) `electron-builder.json` — Windows NSIS target, app id
   `com.covertdefenses.enadox`, bundle `resources/` as extraResources. Validated the NSIS configuration and resource mapping against electron-builder's installed schema.
 - [done] [Codex] (started 2026-11-23 20:24 ET) Vite config for the renderer with React + TS. Built the Phase 1 React entry into dist/renderer with file-relative assets and verified the two Electron entry points survived the build.
-- [todo] [Codex] `.gitignore`, `.eslintrc.cjs`, prettier config.
+- [done] [Codex] (started 2026-11-23 20:25 ET) `.gitignore`, `.eslintrc.cjs`, prettier config. Added ESLint and Prettier settings and ignored TypeScript incremental build files.
 - [todo] [Codex] `README.md` with the setup commands below (the ones in this file's
   "User setup" section). Keep that section in sync.
 
